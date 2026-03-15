@@ -3,6 +3,7 @@
 import { useMemo, useState, useEffect, useId, useRef } from "react"
 import axios from "axios"
 import LiveMSDChart from "./LiveMSDChart"
+import { API_BASE } from "@/lib/api"
 
 type PotentialOption = "uma" | "orb"
 
@@ -95,7 +96,6 @@ type SynthesisRouteResult = {
   procedure: string
 }
 
-const API_BASE = "http://127.0.0.1:8000"
 
 const TM_OPTIONS = ["Mn", "Ni", "Co", "Fe", "Cr", "V", "Ti"]
 const DOPANT_OPTIONS = ["Mg", "Al", "Zn", "Cu", "Zr", "Y", "Nb"]

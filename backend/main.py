@@ -1,4 +1,5 @@
 from typing import Dict, List
+import os
 from uuid import uuid4
 import json
 
@@ -23,12 +24,24 @@ app = FastAPI(title="Na Layered Cathode Screening API")
 RELAX_UPLOAD_SESSIONS: Dict[str, Dict] = {}
 UPLOAD_MD_SESSIONS: Dict[str, Dict] = {}
 
+cors_origins_env = os.getenv("BACKEND_CORS_ORIGINS", "")
+allow_origins = [
+    origin.strip()
+    for origin in cors_origins_env.split(",")
+    if origin.strip()
+]
+
+if not allow_origins:
+    allow_origins = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000", "http://127.0.0.1:3000",
-        "http://localhost:3001", "http://127.0.0.1:3001",
-    ],
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
