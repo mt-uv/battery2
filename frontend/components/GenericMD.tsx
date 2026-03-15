@@ -4,10 +4,9 @@ import { useRef, useState } from "react"
 import axios from "axios"
 import CifViewer from "./CifViewer"
 import AllAtomMSDChart from "./AllAtomMSDChart"
+import { API_BASE } from "@/lib/api"
 
 type PotentialOption = "uma" | "orb"
-
-const API_BASE = "http://127.0.0.1:8000"
 
 export default function GenericMD() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)

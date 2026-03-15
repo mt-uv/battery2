@@ -3,11 +3,11 @@
 import { useRef, useState } from "react"
 import axios from "axios"
 import CifViewer from "./CifViewer"
+import { API_BASE } from "@/lib/api"
 
 type PotentialOption = "uma" | "orb"
 type OptimizerOption = "LBFGS" | "BFGS" | "FIRE"
 
-const API_BASE = "http://127.0.0.1:8000"
 
 export default function RelaxStructure() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
