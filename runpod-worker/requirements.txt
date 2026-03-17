@@ -1,0 +1,8 @@
+runpod
+numpy
+ase
+pymatgen
+huggingface_hub
+fairchem-core
+orb-models
+torch
