@@ -1,8 +1,11 @@
-orb-models
+
 fastapi
-uvicorn
-pymatgen
+uvicorn[standard]
+pydantic
+numpy
 ase
-fairchem
+pymatgen
 huggingface_hub
 torch
+fairchem-core
+orb-models
