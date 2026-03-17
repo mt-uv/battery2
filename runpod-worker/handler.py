@@ -68,20 +68,21 @@ def handler(job):
                 "cif": atoms_to_cif_string(atoms),
             },
         }
-
+        
     if task == "relax":
-        filename = payload.get("filename", "structure.cif")
-        file_bytes = _b64_to_bytes(payload["file_b64"])
-        events = list(
-            run_relaxation_stream(
-                filename=filename,
-                file_bytes=file_bytes,
-                potential=payload.get("potential", "uma"),
-                fmax=float(payload.get("fmax", 0.05)),
-                steps=int(payload.get("steps", 300)),
-            )
+    filename = payload.get("filename", "structure.cif")
+    file_bytes = _b64_to_bytes(payload["file_b64"])
+    events = list(
+        run_relaxation_stream(
+            filename=filename,
+            file_bytes=file_bytes,
+            potential=payload.get("potential", "uma"),
+            optimizer=payload.get("optimizer", "LBFGS"),
+            fmax=float(payload.get("fmax", 0.05)),
+            steps=int(payload.get("steps", 300)),
         )
-        return {"ok": True, "events": events}
+    )
+    return {"ok": True, "events": events}
 
     if task == "uploaded_md":
         filename = payload.get("filename", "structure.cif")
