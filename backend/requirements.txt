@@ -1,10 +1,7 @@
 fastapi
 uvicorn[standard]
-pydantic
+python-multipart
+requests
 numpy
 ase
 pymatgen
-huggingface_hub
-torch
-fairchem-core
-orb-models
