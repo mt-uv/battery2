@@ -72,7 +72,7 @@ def call_runpod(payload: dict):
     if not RUNPOD_API_KEY or not RUNPOD_ENDPOINT_ID:
         raise RuntimeError("RUNPOD_API_KEY or RUNPOD_ENDPOINT_ID is not set")
 
-    url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/runsync"
+    url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
     resp = requests.post(
         url,
         headers={
