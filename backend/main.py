@@ -2,7 +2,8 @@ from typing import Dict, List
 import os
 from uuid import uuid4
 import json
-
+import base64
+import requests
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse, PlainTextResponse
@@ -30,6 +31,35 @@ allow_origins = [
     for origin in cors_origins_env.split(",")
     if origin.strip()
 ]
+
+RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")
+RUNPOD_ENDPOINT_ID = os.getenv("RUNPOD_ENDPOINT_ID")
+
+
+def bytes_to_b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("utf-8")
+
+
+def b64_to_bytes(data: str) -> bytes:
+    return base64.b64decode(data.encode("utf-8"))
+
+
+def call_runpod(payload: dict):
+    if not RUNPOD_API_KEY or not RUNPOD_ENDPOINT_ID:
+        raise RuntimeError("RUNPOD_API_KEY or RUNPOD_ENDPOINT_ID is not set")
+
+    url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/runsync"
+    resp = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {RUNPOD_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={"input": payload},
+        timeout=1800,
+    )
+    resp.raise_for_status()
+    return resp.json()
 
 if not allow_origins:
     allow_origins = [
@@ -86,6 +116,10 @@ def run(req: ScreeningRequest):
         fractions=req.fractions,
         potential=req.potential,
     )
+
+@app.post("/runpod-health")
+def runpod_health():
+    return call_runpod({"task": "healthcheck"})
 
 @app.post("/preview-structure")
 async def preview_structure(file: UploadFile = File(...)):
@@ -268,16 +302,32 @@ def relax_upload_stream(session_id: str):
         try:
             result_id = uuid4().hex
 
-            for item in run_relaxation_stream(
-                filename=payload["filename"],
-                file_bytes=payload["content"],
-                potential=payload["potential"],
-                optimizer=payload["optimizer"],
-            ):
+            result = call_runpod({
+                "task": "relax",
+                "filename": payload["filename"],
+                "file_b64": bytes_to_b64(payload["content"]),
+                "potential": payload["potential"],
+                "optimizer": payload["optimizer"],
+            })
+
+            if not result.get("ok", False):
+                raise RuntimeError(result.get("error", "RunPod relax failed"))
+
+            events = result.get("events", [])
+
+            for item in events:
                 if item.get("event") == "result":
+                    traj_b64 = item.pop("traj_b64", None)
+
+                    traj_path = None
+                    if traj_b64:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".traj") as tmp:
+                            tmp.write(b64_to_bytes(traj_b64))
+                            traj_path = tmp.name
+
                     RELAX_RESULTS[result_id] = {
                         "relaxed_cif": item["relaxed_cif"],
-                        "traj_path": item["traj_path"],
+                        "traj_path": traj_path,
                     }
                     item["result_id"] = result_id
 
@@ -286,7 +336,7 @@ def relax_upload_stream(session_id: str):
                 yield "data: " + json.dumps(item) + "\n\n"
 
             yield "event: done\n"
-            yield "data: " + json.dumps({"message": "Relaxation completed"}) + "\n\n"
+            yield 'data: {"message":"Relaxation completed"}\n\n'
 
         except Exception as e:
             yield "event: error\n"
@@ -426,29 +476,49 @@ def md_upload_stream(session_id: str):
 
     payload["consumed"] = True
 
-    def should_stop():
-        session = UPLOAD_MD_SESSIONS.get(session_id)
-        if session is None:
-          return True
-        return bool(session.get("cancelled", False))
-
     def event_stream():
         try:
-            for item in run_uploaded_md_stream(
-                filename=payload["filename"],
-                file_bytes=payload["content"],
-                potential=payload["potential"],
-                temperature_k=payload["temperature_k"],
-                timestep_fs=payload["timestep_fs"],
-                total_time_ps=payload["total_time_ps"],
-                should_stop=should_stop,
-            ):
+            result_id = uuid4().hex
+
+            result = call_runpod({
+                "task": "uploaded_md",
+                "filename": payload["filename"],
+                "file_b64": bytes_to_b64(payload["content"]),
+                "potential": payload["potential"],
+                "temperature_k": payload["temperature_k"],
+                "timestep_fs": payload["timestep_fs"],
+                "total_time_ps": payload["total_time_ps"],
+            })
+
+            if not result.get("ok", False):
+                raise RuntimeError(result.get("error", "RunPod uploaded MD failed"))
+
+            events = result.get("events", [])
+
+            for item in events:
+                if item.get("event") in {"result", "cancelled"}:
+                    traj_b64 = item.pop("traj_b64", None)
+
+                    traj_path = None
+                    if traj_b64:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".traj") as tmp:
+                            tmp.write(b64_to_bytes(traj_b64))
+                            traj_path = tmp.name
+
+                    if item.get("event") == "result":
+                        UPLOAD_MD_RESULTS[result_id] = {
+                            "final_cif": item["final_cif"],
+                            "traj_path": traj_path,
+                        }
+                        item["result_id"] = result_id
+
                 event = item.get("event", "progress")
                 yield f"event: {event}\n"
                 yield "data: " + json.dumps(item) + "\n\n"
 
             yield "event: done\n"
-            yield "data: " + json.dumps({"message": "Upload MD completed"}) + "\n\n"
+            yield 'data: {"message":"Upload MD completed"}\n\n'
+
         except Exception as e:
             yield "event: error\n"
             yield "data: " + json.dumps({"error": str(e)}) + "\n\n"
