@@ -33,13 +33,25 @@ from torch.serialization import add_safe_globals
 # ONLY do this if you trust the checkpoint source (official fairchem weights)
 add_safe_globals([slice])
 
-TEMPLATE_PATH = "../template/Na12Mn11Zr1O24.cif"
+TEMPLATE_PATH = os.getenv(
+    "TEMPLATE_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "template", "Na12Mn11Zr1O24.cif"),
+)
 
 # Fixed workflow assumptions
 NA_REMOVED_FIXED = 12
 RELAX_FMAX = 0.05
 RELAX_STEPS = 300
-DEVICE = "cpu"
+def _default_device() -> str:
+    env_device = os.getenv("ML_DEVICE")
+    if env_device:
+        return env_device
+    import torch
+
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+DEVICE = _default_device()
 N_CONFIGS = 10
 
 # MD settings
@@ -174,201 +186,6 @@ def normalize_potential(potential: str) -> str:
             f"Unsupported potential '{potential}'. Choose one of: {sorted(SUPPORTED_POTENTIALS)}"
         )
     return potential
-
-def uploaded_file_to_atoms(filename: str, file_bytes: bytes):
-    suffix = os.path.splitext(filename)[1] or ".tmp"
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(file_bytes)
-        tmp_path = tmp.name
-
-    try:
-        atoms = read(tmp_path)
-    finally:
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-
-    return atoms
-
-def run_relaxation_stream(filename: str, file_bytes: bytes, potential="uma", fmax=0.05, steps=300):
-    potential = normalize_potential(potential)
-    calc = get_calc(potential)
-
-    yield {
-        "event": "status",
-        "message": f"Loading uploaded structure: {filename}",
-    }
-
-    atoms = uploaded_file_to_atoms(filename, file_bytes)
-
-    yield {
-        "event": "status",
-        "message": "Structure loaded",
-        "n_atoms": len(atoms),
-        "progress": 0.1,
-    }
-
-    atoms.calc = calc
-    initial_energy = float(atoms.get_potential_energy())
-
-    yield {
-        "event": "status",
-        "message": "Starting relaxation",
-        "initial_energy": initial_energy,
-        "progress": 0.2,
-    }
-
-    final_energy = relax_ase(
-        atoms,
-        calc=calc,
-        fmax=fmax,
-        steps=steps,
-        label=f"uploaded relaxation ({filename})",
-    )
-
-    relaxed_cif = atoms_to_cif_string(atoms)
-
-    yield {
-        "event": "result",
-        "filename": filename,
-        "potential": potential,
-        "n_atoms": len(atoms),
-        "initial_energy": initial_energy,
-        "final_energy": final_energy,
-        "relaxed_cif": relaxed_cif,
-        "progress": 1.0,
-    }
-
-def run_uploaded_md_stream(
-    filename: str,
-    file_bytes: bytes,
-    potential="uma",
-    temperature_k=800.0,
-    timestep_fs=1.0,
-    total_time_ps=5.0,
-    should_stop: Callable[[], bool] | None = None,
-):
-    potential = normalize_potential(potential)
-    should_stop = should_stop or (lambda: False)
-
-    atoms = uploaded_file_to_atoms(filename, file_bytes)
-    calc = get_calc(potential)
-
-    atoms.calc = calc
-
-    steps = max(1, int(round(float(total_time_ps) * 1000.0 / float(timestep_fs))))
-
-    MaxwellBoltzmannDistribution(atoms, temperature_K=temperature_k)
-
-    dyn = Langevin(
-        atoms,
-        timestep=timestep_fs * units.fs,
-        temperature_K=temperature_k,
-        friction=md_friction_for_potential(potential),
-    )
-
-    pbc = atoms.get_pbc()
-    cell = np.array(atoms.get_cell())
-
-    ref_scaled = atoms.get_scaled_positions(wrap=True)
-    prev_scaled = ref_scaled.copy()
-    cumulative_frac = np.zeros_like(ref_scaled)
-
-    temp_series_k = []
-
-    initial_cif = atoms_to_cif_string(atoms)
-    species_symbols = [a.symbol for a in atoms]
-    unique_species = sorted(set(species_symbols))
-
-    traj_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".traj")
-    traj_tmp.close()
-    traj_path = traj_tmp.name
-    traj = Trajectory(traj_path, "w", atoms)
-
-    yield {
-        "event": "meta",
-        "filename": filename,
-        "potential": potential,
-        "temperature_k": float(temperature_k),
-        "timestep_fs": float(timestep_fs),
-        "total_time_ps": float(total_time_ps),
-        "steps": steps,
-        "n_atoms": len(atoms),
-        "initial_cif": initial_cif,
-        "species": unique_species,
-    }
-
-    for step in range(1, steps + 1):
-        if should_stop():
-            avg_temp = float(np.mean(temp_series_k)) if temp_series_k else float(temperature_k)
-            traj.close()
-            yield {
-                "event": "cancelled",
-                "message": f"Upload MD stopped by user at step {step}",
-                "avg_temperature_k": avg_temp,
-                "step": step,
-                "steps": steps,
-            }
-            return
-
-        dyn.run(1)
-        traj.write(atoms)
-
-        curr_scaled = atoms.get_scaled_positions(wrap=True)
-        delta = curr_scaled - prev_scaled
-
-        delta[:, 0] = delta[:, 0] - np.round(delta[:, 0]) if pbc[0] else delta[:, 0]
-        delta[:, 1] = delta[:, 1] - np.round(delta[:, 1]) if pbc[1] else delta[:, 1]
-        delta[:, 2] = delta[:, 2] - np.round(delta[:, 2]) if pbc[2] else delta[:, 2]
-
-        cumulative_frac += delta
-        prev_scaled = curr_scaled
-
-        disp_cart = cumulative_frac @ cell
-        sq = np.sum(disp_cart ** 2, axis=1)
-
-        time_ps = step * float(timestep_fs) / 1000.0
-
-        msd_by_species = {}
-        for sp in unique_species:
-            mask = np.array([a.symbol == sp for a in atoms], dtype=bool)
-            msd_by_species[sp] = float(np.mean(sq[mask])) if np.any(mask) else 0.0
-
-        ek = atoms.get_kinetic_energy()
-        t_inst = ek / (1.5 * units.kB * len(atoms))
-        temp_series_k.append(float(t_inst))
-
-        yield {
-            "event": "progress",
-            "step": step,
-            "steps": steps,
-            "time_ps": float(time_ps),
-            "msd_by_species": msd_by_species,
-            "temperature_k": float(t_inst),
-            "progress": float(step / steps),
-        }
-
-    traj.close()
-
-    final_cif = atoms_to_cif_string(atoms)
-
-    yield {
-        "event": "result",
-        "filename": filename,
-        "potential": potential,
-        "temperature_k": float(temperature_k),
-        "timestep_fs": float(timestep_fs),
-        "total_time_ps": float(total_time_ps),
-        "steps": steps,
-        "avg_temperature_k": float(np.mean(temp_series_k)) if temp_series_k else float(temperature_k),
-        "final_temperature_k": float(temp_series_k[-1]) if temp_series_k else float(temperature_k),
-        "final_cif": final_cif,
-        "traj_path": traj_path,
-    }
-
-
 
 def get_calc(potential: str):
     potential = normalize_potential(potential)
